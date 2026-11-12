@@ -1,6 +1,6 @@
 name: CI
 
-# Fast, parallel CI for the trunk POC (spec, Component 1). One required check,
+# Fast, parallel CI for trunk-based delivery. One required check,
 # ci-ok, aggregates every job; promotion-check is the second required check.
 # Both ALWAYS report: a required check behind a paths filter never reports on
 # PRs it skips, and GitHub then blocks those PRs forever. Jobs skip internally

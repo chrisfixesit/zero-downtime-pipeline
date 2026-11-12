@@ -2,8 +2,7 @@ import type { FeatureFlags } from '../../core/ports/FeatureFlags.ts'
 import { AppConfigAgentFeatureFlags } from './AppConfigAgentFeatureFlags.ts'
 import { InMemoryFeatureFlags } from './InMemoryFeatureFlags.ts'
 
-// Selects the flag adapter from the environment, the same way
-// getEmailDispatcher selects a mail transport:
+// Selects the flag adapter from the environment:
 //   - local / test / not yet wired → in-memory registry defaults
 //   - deployed with AppConfig      → the AppConfig Agent sidecar
 // Fails loud at boot if AppConfig is selected but not configured.

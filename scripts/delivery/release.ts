@@ -45,7 +45,7 @@ export function sameRelease(a: Release, b: Release): boolean {
   return a.sha === b.sha && COMPONENTS.every((c) => a.digests[c] === b.digests[c])
 }
 
-// The single allow-list predicate (spec, Component 3). A release may go to an
+// The single allow-list predicate for promotions. A release may go to an
 // environment only if it already ran, with identical digests, in the stage
 // before it (a promotion) or in that environment itself (a rollback).
 export function isAllowed(

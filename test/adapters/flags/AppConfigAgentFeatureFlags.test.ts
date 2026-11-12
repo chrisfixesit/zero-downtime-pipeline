@@ -80,7 +80,7 @@ describe('AppConfigAgentFeatureFlags', () => {
     assert.equal(errors.length, 1)
   })
 
-  // Review finding 2: once a value has been read, a slow or failed read must
+  // Once a value has been read, a slow or failed read must
   // not switch a released feature off. Defaults apply only before the first read.
   it('keeps answering with the last good document when a later read fails', async () => {
     const errors: unknown[] = []

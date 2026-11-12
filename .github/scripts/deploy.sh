@@ -26,6 +26,8 @@ IMAGE="$REGISTRY/zdp/app@$(jq -er .digests.app "$RELEASE")"
 # Register a new revision from the base revision <base-arn> (pinned in SSM by
 # tofu, never "latest in family") with container <name> pointed at <image>
 # and VERSION=<sha>, which the smoke hook reads to know what it is checking.
+# The base revision's command is a placeholder server, so it and any
+# entryPoint are dropped from that container: the image's own CMD runs.
 register() {
   aws ecs describe-task-definition --task-definition "$1" --query taskDefinition --output json \
   | jq --arg name "$2" --arg img "$3" --arg sha "$4" '
@@ -33,13 +35,14 @@ register() {
           .registeredAt, .registeredBy, .deregisteredAt)
       | .containerDefinitions |= map(
           if .name == $name
-          then .image = $img
+          then del(.command, .entryPoint)
+               | .image = $img
                | .environment = ((.environment // []) | map(select(.name != "VERSION")) + [{name: "VERSION", value: $sha}])
-          else . end)' > td.json
-  aws ecs register-task-definition --cli-input-json file://td.json --query taskDefinition.taskDefinitionArn --output text
+          else . end)' > td.json || return 1
+  aws ecs register-task-definition --cli-input-json file://td.json --query taskDefinition.taskDefinitionArn --output text || return 1
 }
 
-TD=$(register "$(get "$P/app-base-taskdef")" app "$IMAGE" "$SHA")
+TD=$(register "$(get "$P/app-base-taskdef")" app "$IMAGE" "$SHA") || exit 1
 
 # CodeDeploy needs a running task to shift traffic from, so a service parked
 # at zero is brought to one first.
@@ -63,11 +66,16 @@ ID=$(aws deploy create-deployment --application-name "$(get "$P/codedeploy-app")
   --query deploymentId --output text)
 echo "Started CodeDeploy deployment $ID for ${SHA:0:7} in $ENV"
 
-# The deployer role cannot stop deployments; CodeDeploy ends them itself
-# (alarm, hook failure, termination wait), so this only waits and reports.
+# CodeDeploy ends a deployment itself (alarm, hook failure, termination
+# wait), so this mostly waits and reports. A failed poll is retried: the
+# deployment carries on regardless, and giving up would lose its result.
 LAST=""
 for _ in $(seq 1 160); do
-  INFO=$(aws deploy get-deployment --deployment-id "$ID" --query deploymentInfo --output json)
+  if ! INFO=$(aws deploy get-deployment --deployment-id "$ID" --query deploymentInfo --output json); then
+    echo "::warning::get-deployment failed for $ID; retrying" >&2
+    sleep 15
+    continue
+  fi
   STATUS=$(jq -r .status <<< "$INFO")
   [ "$STATUS" = "$LAST" ] || { echo "Deployment $ID: $STATUS"; LAST=$STATUS; }
   case "$STATUS" in
@@ -82,5 +90,11 @@ for _ in $(seq 1 160); do
   esac
   sleep 15
 done
-echo "::error::$ENV deployment $ID did not finish in 40 minutes (last status $LAST); nothing recorded" >&2
+# Out of time (a release whose /healthz never passes stalls here). Stop it so
+# CodeDeploy rolls back rather than leaving it to finish unrecorded.
+echo "Deployment $ID still $LAST after 40 minutes; stopping it" >&2
+if ! aws deploy stop-deployment --deployment-id "$ID" --auto-rollback-enabled >/dev/null; then
+  echo "::warning::stop-deployment failed for $ID; stop it in the CodeDeploy console" >&2
+fi
+echo "::error::$ENV deployment $ID did not finish in 40 minutes; stopped it with auto-rollback; nothing recorded" >&2
 exit 1

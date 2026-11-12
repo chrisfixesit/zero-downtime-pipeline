@@ -98,8 +98,9 @@ resource "aws_iam_role_policy" "deployer" {
       # Scale a service still at zero to one before its first deploy.
       { Effect = "Allow", Action = ["ecs:UpdateService"], Resource = "arn:aws:ecs:us-east-1:${local.account}:service/${local.name}/${local.name}-${each.key}-app" },
       { Effect = "Allow", Action = ["iam:PassRole"], Resource = [aws_iam_role.exec[each.key].arn, aws_iam_role.task[each.key].arn], Condition = { StringEquals = { "iam:PassedToService" = "ecs-tasks.amazonaws.com" } } },
-      # Deployments only into this environment's own deployment group.
-      { Effect = "Allow", Action = ["codedeploy:CreateDeployment", "codedeploy:GetDeployment", "codedeploy:GetDeploymentGroup"], Resource = local.env_arns[each.key].deployment_group },
+      # Deployments only into this environment's own deployment group. Stop is
+      # for deploy.sh's 40-minute timeout, which stops with auto-rollback.
+      { Effect = "Allow", Action = ["codedeploy:CreateDeployment", "codedeploy:GetDeployment", "codedeploy:GetDeploymentGroup", "codedeploy:StopDeployment"], Resource = local.env_arns[each.key].deployment_group },
       { Effect = "Allow", Action = ["codedeploy:GetDeploymentConfig"], Resource = "arn:aws:codedeploy:us-east-1:${local.account}:deploymentconfig:*" },
       { Effect = "Allow", Action = ["codedeploy:RegisterApplicationRevision", "codedeploy:GetApplicationRevision"], Resource = "arn:aws:codedeploy:us-east-1:${local.account}:application:${aws_codedeploy_app.this.name}" },
       { Effect = "Allow", Action = ["ssm:GetParameter", "ssm:GetParameters"], Resource = [local.env_arns[each.key].params, "arn:aws:ssm:us-east-1:${local.account}:parameter/${local.name}/shared/*"] },

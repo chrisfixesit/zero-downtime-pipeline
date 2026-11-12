@@ -57,6 +57,8 @@ Day-to-day use (releasing, rolling back, flags, timings) is in [CONTRIBUTING.md]
 | **Drift check** | Hourly: deploy file, last-good and the running image must agree. |
 | **Stale flags** | Weekly: lists flags older than 60 days. |
 
+While a deployment is in progress, until it reaches Succeeded and records last-good, **Drift check** can report the new digest as "not last-good". Re-run it after the deploy finishes.
+
 ## Setup
 
 One AWS account, region `us-east-1`. The commands below use `AWS_PROFILE=personal-sandbox`; use your own profile, and see [Copying this template](#copying-this-template) for the values to change first.
@@ -79,11 +81,13 @@ The pipeline's failure paths are proved with throwaway commits and a flag, not d
 
 ### 1. Smoke failure: stopped before any traffic
 
-1. Change `/healthz` in `src/app.ts` to return 503, and its test in `test/app.test.ts` to match, so CI stays green (the sandbox deploy only runs when the unit tests pass).
+1. Make `/` in `src/app.ts` report the wrong version (`version: 'drill'` instead of `version: opts.version`), and change its test in `test/app.test.ts` to expect `'drill'`, so CI stays green (the sandbox deploy only runs when the unit tests pass). Leave `/healthz` alone: it is also the target group's health check, so green must stay healthy for the hook to run at all.
 2. Merge. CI builds the image and **Deploy (reusable)** runs for sandbox.
-3. Expect the smoke hook to fail on the test listener and CodeDeploy to stop the deployment. The run fails with an error naming the deployment's `errorInformation` and `nothing recorded`.
+3. Expect the smoke hook to fail on the test listener (its log says `/ reports version "drill", expected "<sha>"`) and CodeDeploy to fail the deployment. The run fails with `::error::sandbox deployment <id> Failed: <code> <message>; CodeDeploy returned traffic to the previous release; nothing recorded`, where `<code>` and `<message>` are the deployment's `errorInformation`.
 4. Check that users never saw it: `curl http://<alb>:8081/` still reports the previous `version`, and last-good is unchanged.
 5. Revert the commit through a PR; it deploys and records normally.
+
+A release whose `/healthz` fails is a different failure: green never becomes healthy, so the hook never runs and CodeDeploy waits. `deploy.sh` stops such a deployment with auto-rollback at its 40-minute timeout and fails with `did not finish in 40 minutes; stopped it with auto-rollback; nothing recorded`.
 
 ### 2. Canary alarm: rolled back under real traffic (staging)
 
@@ -123,6 +127,7 @@ Drill 1 needs no such step: sandbox has no deploy file, and after the rollback i
 Replace:
 
 - **The app:** `src/app.ts`, `src/main.ts` and `Dockerfile`. The pipeline needs only `GET /healthz` → 200, `GET /` → JSON whose `version` is the `VERSION` environment variable, and the server listening on `PORT` (8080).
+  The base task definition's `command` (`infra/env/main.tf`) is a placeholder only; `deploy.sh` strips it, so the image's own `CMD` is what runs.
 - **The smoke checks** in `infra/smoke-hook/smoke.mjs`, if your app needs more than that.
 - **Flags:** `alarmDrill` in `src/core/flags/registry.ts` is the drill flag; keep it or replace it with your own.
 - **Owners:** `.github/CODEOWNERS`.
