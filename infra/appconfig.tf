@@ -70,6 +70,40 @@ resource "aws_appconfig_deployment_strategy" "linear" {
   replicate_to                   = "NONE"
 }
 
+# Every environment starts with an empty flag document (every flag at its
+# registry default, off) deployed once. Without it, a flag's first flip is the
+# environment's first deployment, and rolling that back leaves nothing to
+# return to: the agent keeps serving the rolled-back value. No watch here, so
+# the baseline itself cannot be rolled back.
+resource "aws_appconfig_deployment_strategy" "baseline" {
+  name                           = "${local.name}-baseline"
+  growth_type                    = "LINEAR"
+  growth_factor                  = 100
+  deployment_duration_in_minutes = 0
+  final_bake_time_in_minutes     = 0
+  replicate_to                   = "NONE"
+}
+
+resource "aws_appconfig_hosted_configuration_version" "baseline" {
+  for_each                 = local.envs
+  application_id           = aws_appconfig_application.this[each.key].id
+  configuration_profile_id = aws_appconfig_configuration_profile.flags[each.key].configuration_profile_id
+  content_type             = "application/json"
+  # AppConfig stores an empty document without the flags and values maps;
+  # writing it that way keeps plans clean.
+  content = jsonencode({ version = "1" })
+}
+
+resource "aws_appconfig_deployment" "baseline" {
+  for_each                 = local.envs
+  application_id           = aws_appconfig_application.this[each.key].id
+  environment_id           = aws_appconfig_environment.env[each.key].environment_id
+  configuration_profile_id = aws_appconfig_configuration_profile.flags[each.key].configuration_profile_id
+  configuration_version    = aws_appconfig_hosted_configuration_version.baseline[each.key].version_number
+  deployment_strategy_id   = aws_appconfig_deployment_strategy.baseline.id
+  description              = "Baseline: every flag at its registry default"
+}
+
 resource "aws_ssm_parameter" "appconfig_shared" {
   name  = "/${local.name}/shared/appconfig-strategy-id"
   type  = "String"
