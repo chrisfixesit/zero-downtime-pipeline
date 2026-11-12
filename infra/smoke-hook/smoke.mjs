@@ -54,10 +54,16 @@ export async function smoke({ baseUrl, expectedVersion, fetchFn = fetch, attempt
   return { ok: false, reason: `after ${attempts} attempts: ${last.reason}` }
 }
 
-// The ECS service's TaskDefinition from an AppSpecContent revision. Resource
-// names are arbitrary, so take the first AWS::ECS::Service.
-function taskDefinitionOf(deploymentInfo) {
-  const appspec = JSON.parse(deploymentInfo.revision.appSpecContent.content)
+// The ECS service's TaskDefinition from an AppSpecContent revision.
+// GetDeployment returns only the appspec's sha256, so the content comes from
+// GetApplicationRevision. Resource names are arbitrary, so take the first
+// AWS::ECS::Service.
+async function taskDefinitionOf(codedeploy, deploymentInfo) {
+  const { revision } = await codedeploy.getApplicationRevision({
+    applicationName: deploymentInfo.applicationName,
+    revision: deploymentInfo.revision,
+  })
+  const appspec = JSON.parse(revision.appSpecContent.content)
   for (const resource of appspec.Resources ?? []) {
     for (const target of Object.values(resource)) {
       if (target?.Type === 'AWS::ECS::Service') return target.Properties.TaskDefinition
@@ -80,7 +86,7 @@ export function makeHandler({ codedeploy, ecs, fetchFn = fetch, testUrls, smokeO
       group = deploymentInfo.deploymentGroupName
       const baseUrl = testUrls[group]
       if (!baseUrl) throw new Error(`no test URL for deployment group ${group}`)
-      const { taskDefinition } = await ecs.describeTaskDefinition({ taskDefinition: taskDefinitionOf(deploymentInfo) })
+      const { taskDefinition } = await ecs.describeTaskDefinition({ taskDefinition: await taskDefinitionOf(codedeploy, deploymentInfo) })
       const app = taskDefinition.containerDefinitions.find((c) => c.name === 'app')
       const expectedVersion = app?.environment?.find((e) => e.name === 'VERSION')?.value
       if (!expectedVersion) throw new Error('the app container sets no VERSION')

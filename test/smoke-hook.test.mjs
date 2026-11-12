@@ -45,24 +45,28 @@ test('smoke retries until the release answers', async () => {
 })
 
 // Stub CodeDeploy and ECS clients, recording the status the handler reports.
+// Like the real API, GetDeployment returns only the appspec's sha256; the
+// content comes from GetApplicationRevision.
 function stubs({ describeTaskDefinition }) {
   const reported = []
+  const content = JSON.stringify({
+    version: 0.0,
+    Resources: [{ TargetService: { Type: 'AWS::ECS::Service', Properties: { TaskDefinition: TASK_DEF } } }],
+  })
   const codedeploy = {
     getDeployment: async ({ deploymentId }) => ({
       deploymentInfo: {
         deploymentId,
+        applicationName: 'zdp',
         deploymentGroupName: 'zdp-sandbox',
-        revision: {
-          revisionType: 'AppSpecContent',
-          appSpecContent: {
-            content: JSON.stringify({
-              version: 0.0,
-              Resources: [{ TargetService: { Type: 'AWS::ECS::Service', Properties: { TaskDefinition: TASK_DEF } } }],
-            }),
-          },
-        },
+        revision: { revisionType: 'AppSpecContent', appSpecContent: { sha256: 'abc' } },
       },
     }),
+    getApplicationRevision: async ({ applicationName, revision }) => {
+      assert.equal(applicationName, 'zdp')
+      assert.equal(revision.appSpecContent.sha256, 'abc')
+      return { revision: { revisionType: 'AppSpecContent', appSpecContent: { content, sha256: 'abc' } } }
+    },
     putLifecycleEventHookExecutionStatus: async (params) => {
       reported.push(params)
       return {}
