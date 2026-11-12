@@ -22,7 +22,9 @@ A merge to `main` builds one image and deploys it to sandbox. To move it on, run
 
 ### What happens after you merge
 
-<!-- Timings are estimates until the first real runs; measure and update them. -->
+<!-- Timings are estimates until the first real runs; measure and update them:
+     sandbox about 10 minutes, staging/prod about 15 (below), and a flag
+     flip about six minutes (Releasing behind a flag, step 5). -->
 
 1. **CI on `main`** runs the same checks as your PR, then builds the image once. `ci-ok` is the required check; it fails if any job fails.
 2. **Sandbox deploys** that image through CodeDeploy. The new release (green) starts beside the running one (blue) and is attached to the test listener only.

@@ -93,6 +93,9 @@ The pipeline's failure paths are proved with throwaway commits and a flag, not d
 4. When the CodeDeploy console shows traffic shifting (10% on green), drive traffic: `scripts/drill-traffic.sh "http://<alb>:8082/?drill" 600`. About 5 requests a second means about 30 reach green each minute, all 500.
 5. Expect `zdp-staging-target-5xx` to fire within a few minutes, CodeDeploy to return all traffic to blue (the 5xx count in the drill output stops rising), and the Apply promotion run to fail with nothing recorded. Staging's last-good is unchanged.
 6. Revert the commit through a PR. Until the revert's sandbox deploy records a new last-good, **do not promote sandbox to prod**: its last-good is the drill release.
+7. Restore staging's intent. The merged promotion PR left `deploy/staging.json` naming the drill release while the previous one is still running, so **Drift check** reports `staging: deploy/staging.json asks for <drill> but <previous> is running` every hour until this is fixed. Run **Roll back** for `staging` with the previous release's full SHA (staging's last-good: `aws ssm get-parameter --name /zdp/staging/last-good --query Parameter.Value --output text | jq -r .sha`), then review and merge the PR it opens. Alternatively, once the revert is sandbox's last-good, run **Promote** for staging again.
+
+Drill 1 needs no such step: sandbox has no deploy file, and after the rollback it is still running its last-good.
 
 ### 3. Flag alarm: AppConfig rolls the flag back (sandbox)
 

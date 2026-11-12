@@ -13,8 +13,16 @@ OUT=$(cd "$(dirname "$0")/../infra" && AWS_PROFILE="${AWS_PROFILE:-personal-sand
 # Every environment deploys from main only.
 for env in sandbox staging prod release-automation; do
   gh api -X PUT "repos/$R/environments/$env" --input - <<<'{"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' >/dev/null
-  # Fails harmlessly when the policy already exists (re-runs).
+  # Tolerated because it fails when the policy already exists (re-runs); the
+  # check below catches every other failure.
   gh api -X POST "repos/$R/environments/$env/deployment-branch-policies" -f name=main -f type=branch >/dev/null 2>&1 || true
+  # Without this policy the environment is not restricted to main, and a run
+  # on any branch could assume its deployer role, prod included.
+  if ! gh api "repos/$R/environments/$env/deployment-branch-policies" \
+      | jq -e 'any(.branch_policies[]; .name == "main" and (.type // "branch") == "branch")' >/dev/null; then
+    echo "error: environment $env has no deployment branch policy for main; it is not restricted to main. Fix it before deploying." >&2
+    exit 1
+  fi
 done
 
 for env in sandbox staging prod; do
