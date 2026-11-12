@@ -1,0 +1,22 @@
+name: Stale flags
+
+on:
+  schedule:
+    - cron: '0 12 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - run: |
+          STALE=$(node scripts/delivery/cli.ts stale-flags 60)
+          { echo "### Flags older than 60 days"; echo; echo "$STALE"; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$STALE" = "none" ] || echo "::warning::Remove or release these flags: $(echo "$STALE" | paste -sd, -)"

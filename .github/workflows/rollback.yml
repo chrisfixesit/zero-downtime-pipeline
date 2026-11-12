@@ -1,0 +1,118 @@
+name: Roll back
+
+# Returns an environment to a release that already ran there. Staging and
+# prod go through a PR like any promotion; sandbox has no gate, so it
+# redeploys directly. Either way the SHA must be in that environment's own
+# last-good history.
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        options: [sandbox, staging, prod]
+        required: true
+      sha:
+        description: Full 40-character commit SHA that previously ran in this environment
+        type: string
+        required: true
+
+concurrency:
+  group: open-pr-${{ inputs.env }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  prepare-pr:
+    if: github.ref == 'refs/heads/main' && inputs.env != 'sandbox'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      payload: ${{ steps.p.outputs.payload }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      # The SHA is free text, so it reaches the shell only through env and is
+      # validated before use. Never interpolate ${{ inputs.sha }} into run:.
+      - id: p
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full 40-character lowercase commit SHA"; exit 1; }
+          node scripts/delivery/cli.ts rollback "${{ inputs.env }}" "$SHA" > payload.json
+          echo "payload=$(jq -c . payload.json)" >> "$GITHUB_OUTPUT"
+
+  # Only this job sees the App key: it lives in the release-automation
+  # environment, restricted to main. It needs no AWS access; the payload comes
+  # from the job above, which keeps the ref-based OIDC subject the read role trusts.
+  open-pr:
+    needs: prepare-pr
+    runs-on: ubuntu-latest
+    environment:
+      name: release-automation
+    permissions:
+      contents: read
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_KEY }}
+      # No token in .git/config: the App token is handed only to the step that
+      # pushes and opens the PR, so nothing else in this job can read it.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          PAYLOAD: ${{ needs.prepare-pr.outputs.payload }}
+        run: |
+          printf '%s' "$PAYLOAD" > payload.json
+          .github/scripts/open-release-pr.sh payload.json
+
+  resolve-sandbox:
+    if: github.ref == 'refs/heads/main' && inputs.env == 'sandbox'
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.r.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: r
+        env:
+          SHA: ${{ inputs.sha }}
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::sha must be a full 40-character lowercase commit SHA"; exit 1; }
+          node scripts/delivery/cli.ts resolve-own sandbox "$SHA" >> "$GITHUB_OUTPUT"
+
+  deploy-sandbox:
+    needs: resolve-sandbox
+    uses: ./.github/workflows/deploy.yml
+    with:
+      env: sandbox
+      release: ${{ needs.resolve-sandbox.outputs.release }}
+    permissions:
+      contents: read
+      id-token: write

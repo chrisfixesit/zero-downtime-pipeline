@@ -1,0 +1,21 @@
+# Ordinary code has no owner: a PR needs only ci-ok. Anything that decides
+# what reaches an environment, or can act as a deploy identity, needs the
+# owner's approval. PR-run checks can be rewritten by the PR itself, so this
+# review is the real control on the Team plan.
+#
+# Promotion PRs are opened by the automation App, not by the maintainer, so
+# the maintainer can approve them. The maintainer's own PRs to gated paths
+# merge through the admin bypass, which GitHub logs.
+#
+# A team should replace the owner with its own groups: devs for
+# deploy/staging.json, approvers for everything else.
+/deploy/staging.json        @chrisfixesit
+/deploy/prod.json           @chrisfixesit
+/.github/workflows/         @chrisfixesit
+/.github/scripts/           @chrisfixesit
+/.github/CODEOWNERS         @chrisfixesit
+/scripts/delivery/          @chrisfixesit
+/src/core/flags/            @chrisfixesit
+/infra/                     @chrisfixesit
+/infra/smoke-hook/          @chrisfixesit
+/package.json               @chrisfixesit

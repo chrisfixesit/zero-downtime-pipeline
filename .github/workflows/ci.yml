@@ -1,0 +1,158 @@
+name: CI
+
+# Fast, parallel CI for the trunk POC (spec, Component 1). One required check,
+# ci-ok, aggregates every job; promotion-check is the second required check.
+# Both ALWAYS report: a required check behind a paths filter never reports on
+# PRs it skips, and GitHub then blocks those PRs forever. Jobs skip internally
+# instead, and ci-ok treats "skipped" as fine.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+  HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+      deploy: ${{ steps.classify.outputs.deploy }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - id: classify
+        # shell: bash means -eo pipefail. GitHub's default shell has no pipefail, so
+        # without it the step takes tee's exit code and a failing CLI passes.
+        shell: bash
+        run: node scripts/delivery/cli.ts classify "$BASE_SHA" "$HEAD_SHA" | tee -a "$GITHUB_OUTPUT"
+
+  typecheck:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+
+  unit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  actionlint:
+    needs: changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.7 -color
+      # build-push.sh against stubbed docker and aws: one unchanged build
+      # context, nothing left in it, valid release JSON.
+      - run: bash .github/scripts/build-push.test.sh
+      - run: bash .github/scripts/deploy.test.sh
+
+  promotion-check:
+    needs: changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - if: needs.changes.outputs.deploy != 'true'
+        run: echo "No promotion in this change."
+      - if: needs.changes.outputs.deploy == 'true'
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - if: needs.changes.outputs.deploy == 'true'
+        uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - if: needs.changes.outputs.deploy == 'true'
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ github.event_name == 'pull_request' && vars.PR_READ_ROLE_ARN || vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      - if: needs.changes.outputs.deploy == 'true'
+        run: node scripts/delivery/cli.ts check-pr "$BASE_SHA" "$HEAD_SHA"
+
+  ci-ok:
+    if: always()
+    needs: [changes, typecheck, unit, actionlint, promotion-check, build]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          if echo "$RESULTS" | jq -e 'any(.[]; . == "failure" or . == "cancelled")' >/dev/null; then
+            echo "::error::A required job failed or was cancelled."; exit 1
+          fi
+
+  # Builds this commit's image once, on push to main only. The sandbox
+  # environment supplies the deployer role (the only one allowed to push).
+  build:
+    needs: changes
+    if: github.event_name == 'push' && needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: sandbox
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      release: ${{ steps.release.outputs.json }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.DEPLOYER_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - run: .github/scripts/build-push.sh "${{ github.sha }}" "${{ steps.ecr.outputs.registry }}" > release.json
+      - id: release
+        run: echo "json=$(jq -c . release.json)" >> "$GITHUB_OUTPUT"
+
+  deploy-sandbox:
+    needs: [build, typecheck, unit]
+    if: github.event_name == 'push' && needs.build.result == 'success'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      env: sandbox
+      release: ${{ needs.build.outputs.release }}
+    permissions:
+      contents: read
+      id-token: write

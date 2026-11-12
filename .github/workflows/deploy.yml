@@ -1,100 +1,57 @@
-name: Deploy (blue/green canary)
+name: Deploy (reusable)
+
+# Deploys a release (sha + image digests) to one environment. Called by ci.yml
+# for sandbox, by apply.yml for promotion PRs, and by rollback.yml for sandbox.
+# The job runs in the GitHub Environment of the same name, which is what makes
+# the OIDC subject environment:<env>, the only subject that env's deployer
+# role trusts.
 
 on:
-  push:
-    branches: [main]
-    paths: [app/**, .github/workflows/deploy.yml]
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      chaos:
-        description: "Set CHAOS=1 to demo alarm-triggered auto-rollback"
-        default: "0"
+      env:
+        type: string
+        required: true
+      release:
+        type: string
+        required: true
 
 permissions:
-  id-token: write   # OIDC — no stored AWS keys
   contents: read
-
-env:
-  AWS_REGION: us-east-1
-  PROJECT: zdp
+  id-token: write
 
 jobs:
   deploy:
+    name: Deploy to ${{ inputs.env }}
     runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.env }}
+    concurrency:
+      group: deploy-${{ inputs.env }}
+      cancel-in-progress: false
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Assume deploy role via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: actions/checkout@v7
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to ECR
-        id: ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build and push image
-        id: image
+          role-to-assume: ${{ vars.DEPLOYER_ROLE_ARN }}
+          aws-region: us-east-1
+      - name: Deploy
         env:
-          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          RELEASE: ${{ inputs.release }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          IMAGE="$REGISTRY/$PROJECT:${GITHUB_SHA::12}"
-          docker build \
-            --build-arg VERSION="${GITHUB_SHA::12}" \
-            -t "$IMAGE" app/
-          docker push "$IMAGE"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-
-      - name: Register new task definition revision
-        id: taskdef
+          printf '%s' "$RELEASE" > release.json
+          .github/scripts/deploy.sh "${{ inputs.env }}" release.json
+      - name: Summary
+        if: always()
+        env:
+          RELEASE: ${{ inputs.release }}
         run: |
-          aws ecs describe-task-definition \
-            --task-definition "$PROJECT" \
-            --query taskDefinition > current.json
-
-          jq --arg IMAGE "${{ steps.image.outputs.image }}" \
-             --arg VERSION "${GITHUB_SHA::12}" \
-             --arg CHAOS "${{ github.event.inputs.chaos || '0' }}" \
-             '.containerDefinitions[0].image = $IMAGE
-              | .containerDefinitions[0].environment = [
-                  {"name":"VERSION","value":$VERSION},
-                  {"name":"CHAOS","value":$CHAOS}
-                ]
-              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
-                    .compatibilities, .registeredAt, .registeredBy)' \
-            current.json > new.json
-
-          ARN=$(aws ecs register-task-definition \
-            --cli-input-json file://new.json \
-            --query 'taskDefinition.taskDefinitionArn' --output text)
-          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
-
-      - name: Create blue/green deployment
-        run: |
-          cat > appspec.json <<EOF
           {
-            "version": 0.0,
-            "Resources": [{
-              "TargetService": {
-                "Type": "AWS::ECS::Service",
-                "Properties": {
-                  "TaskDefinition": "${{ steps.taskdef.outputs.arn }}",
-                  "LoadBalancerInfo": {
-                    "ContainerName": "app",
-                    "ContainerPort": 8080
-                  }
-                }
-              }
-            }]
-          }
-          EOF
-
-          DEPLOYMENT_ID=$(aws deploy create-deployment \
-            --application-name "$PROJECT" \
-            --deployment-group-name "$PROJECT-dg" \
-            --revision "revisionType=AppSpecContent,appSpecContent={content='$(cat appspec.json | jq -c . | sed "s/'/\\\\'/g")'}" \
-            --query deploymentId --output text)
-          echo "Deployment: $DEPLOYMENT_ID"
-
-          aws deploy wait deployment-successful --deployment-id "$DEPLOYMENT_ID"
+            echo "### ${{ inputs.env }}: $(echo "$RELEASE" | jq -r .sha | cut -c1-7)"
+            echo
+            echo '| Image | Digest |'
+            echo '|---|---|'
+            echo "$RELEASE" | jq -r '.digests | to_entries[] | "| \(.key) | `\(.value)` |"'
+          } >> "$GITHUB_STEP_SUMMARY"
