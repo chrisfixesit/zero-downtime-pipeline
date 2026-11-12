@@ -4,3 +4,5 @@
 .tfplan
 .DS_Store
 node_modules/
+*.zip
+infra/.build/

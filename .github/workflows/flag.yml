@@ -1,0 +1,48 @@
+name: Flag
+
+# Turns a registered flag on or off in one environment, with no image deploy.
+# Runs in that GitHub Environment so it can assume the env's deployer role.
+
+on:
+  workflow_dispatch:
+    inputs:
+      env:
+        type: choice
+        options: [sandbox, staging, prod]
+        required: true
+      flag:
+        description: Flag name from src/core/flags/registry.ts
+        type: string
+        required: true
+      state:
+        type: choice
+        options: ['on', 'off']
+        required: true
+
+concurrency:
+  group: flag-${{ inputs.env }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  flip:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.env }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.DEPLOYER_ROLE_ARN }}
+          aws-region: us-east-1
+      - env:
+          FLAG: ${{ inputs.flag }}
+        run: .github/scripts/flip-flag.sh "${{ inputs.env }}" "$FLAG" "${{ inputs.state }}"

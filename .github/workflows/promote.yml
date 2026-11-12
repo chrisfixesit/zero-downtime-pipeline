@@ -1,0 +1,77 @@
+name: Promote
+
+# Opens a PR that sets deploy/<target>.json to the previous stage's
+# last-good release. Merging that PR (with code-owner approval) deploys it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        type: choice
+        options: [staging, prod]
+        required: true
+
+concurrency:
+  group: open-pr-${{ inputs.target }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Reads release state from AWS with no environment, so the OIDC subject stays
+  # ref:refs/heads/main, the only subject the read role trusts.
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      payload: ${{ steps.p.outputs.payload }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: p
+        run: |
+          node scripts/delivery/cli.ts promotion "${{ inputs.target }}" > payload.json
+          echo "payload=$(jq -c . payload.json)" >> "$GITHUB_OUTPUT"
+
+  # Only this job sees the App key: it lives in the release-automation
+  # environment, restricted to main. It needs no AWS access; the payload comes
+  # from the job above, which keeps the ref-based OIDC subject the read role trusts.
+  open-pr:
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment:
+      name: release-automation
+    permissions:
+      contents: read
+    steps:
+      - id: app
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_KEY }}
+      # No token in .git/config: the App token is handed only to the step that
+      # pushes and opens the PR, so nothing else in this job can read it.
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
+          PAYLOAD: ${{ needs.prepare.outputs.payload }}
+        run: |
+          printf '%s' "$PAYLOAD" > payload.json
+          .github/scripts/open-release-pr.sh payload.json

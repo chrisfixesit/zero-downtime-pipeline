@@ -1,0 +1,36 @@
+name: Drift check
+
+# Hourly: per environment, compare the deploy file (intent), last-good
+# (truth) and the image actually running. Fails, visibly, when any two
+# disagree; a failed apply shows up here until it is fixed.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  drift:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        env: [sandbox, staging, prod]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      # shell: bash means -eo pipefail. GitHub's default shell has no pipefail, so
+      # without it the step takes tee's exit code and a failing CLI passes.
+      - run: node scripts/delivery/cli.ts drift "${{ matrix.env }}" | tee -a "$GITHUB_STEP_SUMMARY"
+        shell: bash

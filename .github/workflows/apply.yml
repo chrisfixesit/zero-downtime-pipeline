@@ -1,0 +1,114 @@
+name: Apply promotion
+
+# Runs when a merged PR changes deploy/**. Works out which environments
+# changed from before..after (so a staging-only push never touches prod),
+# re-checks each file against the allow-list (defence in depth: the PR
+# already passed promotion-check), and deploys exactly the file at the pushed
+# SHA. last-good is the truth; on failure it stays put and the PR is told.
+
+on:
+  push:
+    branches: [main]
+    paths: ['deploy/**']
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      envs: ${{ steps.envs.outputs.envs }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - id: envs
+        run: echo "envs=$(node scripts/delivery/cli.ts envs-changed '${{ github.event.before }}' '${{ github.sha }}')" >> "$GITHUB_OUTPUT"
+
+  verify-staging:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.envs), 'staging')
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.v.outputs.release }}
+      noop: ${{ steps.v.outputs.noop }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: v
+        # shell: bash means -eo pipefail. GitHub's default shell has no pipefail, so
+        # without it the step takes tee's exit code and a failing CLI passes.
+        shell: bash
+        run: node scripts/delivery/cli.ts verify staging "${{ github.sha }}" | tee -a "$GITHUB_OUTPUT"
+
+  deploy-staging:
+    needs: verify-staging
+    if: needs.verify-staging.outputs.noop == 'false'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      env: staging
+      release: ${{ needs.verify-staging.outputs.release }}
+    permissions:
+      contents: read
+      id-token: write
+
+  verify-prod:
+    needs: plan
+    if: contains(fromJSON(needs.plan.outputs.envs), 'prod')
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.v.outputs.release }}
+      noop: ${{ steps.v.outputs.noop }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 26
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.MAIN_READ_ROLE_ARN }}
+          aws-region: us-east-1
+      - id: v
+        # shell: bash means -eo pipefail. GitHub's default shell has no pipefail, so
+        # without it the step takes tee's exit code and a failing CLI passes.
+        shell: bash
+        run: node scripts/delivery/cli.ts verify prod "${{ github.sha }}" | tee -a "$GITHUB_OUTPUT"
+
+  deploy-prod:
+    needs: verify-prod
+    if: needs.verify-prod.outputs.noop == 'false'
+    uses: ./.github/workflows/deploy.yml
+    with:
+      env: prod
+      release: ${{ needs.verify-prod.outputs.release }}
+    permissions:
+      contents: read
+      id-token: write
+
+  report-failure:
+    needs: [verify-staging, deploy-staging, verify-prod, deploy-prod]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" --jq '.[0].number // empty')
+          MSG="Applying this release failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. last-good is unchanged, so the environment still runs its previous release, and drift-check will report the file and the running release disagreeing until this is fixed. Fix with a revert PR or the next promotion; nothing retries automatically."
+          if [ -n "$PR" ]; then gh pr comment "$PR" -R "${{ github.repository }}" --body "$MSG"; else echo "::error::$MSG"; fi
