@@ -19,23 +19,31 @@ export function createHandler(opts: HandlerOptions) {
   const startedAt = opts.startedAt ?? Date.now()
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-    const path = new URL(req.url ?? '/', 'http://localhost').pathname
+    try {
+      // Plain split: a malformed target must not be able to throw here.
+      const path = (req.url ?? '/').split('?')[0]
 
-    if (req.method === 'GET' && path === '/healthz') {
-      return send(res, 200, { status: 'ok', version: opts.version })
+      if (req.method === 'GET' && path === '/healthz') {
+        return send(res, 200, { status: 'ok', version: opts.version })
+      }
+      if (req.method === 'GET' && path === '/') {
+        return send(res, 200, {
+          service: 'zero-downtime-pipeline',
+          version: opts.version,
+          uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
+        })
+      }
+      // Alarm drill: while the flag is on, this endpoint fails on purpose so the
+      // rollback alarm can be exercised end to end. A failed flag read fails closed.
+      if (req.method === 'GET' && path === '/drill/alarm') {
+        const on = await opts.flags.isEnabled('alarmDrill').catch(() => false)
+        if (on) return send(res, 500, { error: 'alarm drill' })
+      }
+      send(res, 404, { error: 'not found' })
+    } catch (e) {
+      console.error(JSON.stringify({ event: 'request.error', error: String(e) }))
+      if (res.headersSent) res.destroy()
+      else send(res, 500, { error: 'internal error' })
     }
-    if (req.method === 'GET' && path === '/') {
-      return send(res, 200, {
-        service: 'zero-downtime-pipeline',
-        version: opts.version,
-        uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-      })
-    }
-    // Alarm drill: while the flag is on, this endpoint fails on purpose so the
-    // rollback alarm can be exercised end to end.
-    if (req.method === 'GET' && path === '/drill/alarm' && (await opts.flags.isEnabled('alarmDrill'))) {
-      return send(res, 500, { error: 'alarm drill' })
-    }
-    send(res, 404, { error: 'not found' })
   }
 }
