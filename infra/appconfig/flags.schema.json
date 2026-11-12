@@ -2,7 +2,8 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "zdp feature flags (stored AWS.AppConfig.FeatureFlags document)",
   "type": "object",
-  "required": ["version", "flags", "values"],
+  "required": ["version"],
+  "$comment": "flags and values are optional: AppConfig drops empty maps, so the all-default baseline is stored as {\"version\":\"1\"}.",
   "properties": {
     "version": { "const": "1" },
     "flags": {

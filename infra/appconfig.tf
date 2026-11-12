@@ -89,7 +89,9 @@ resource "aws_appconfig_hosted_configuration_version" "baseline" {
   application_id           = aws_appconfig_application.this[each.key].id
   configuration_profile_id = aws_appconfig_configuration_profile.flags[each.key].configuration_profile_id
   content_type             = "application/json"
-  content                  = jsonencode({ version = "1", flags = {}, values = {} })
+  # AppConfig stores an empty document without the flags and values maps;
+  # writing it that way keeps plans clean.
+  content = jsonencode({ version = "1" })
 }
 
 resource "aws_appconfig_deployment" "baseline" {
