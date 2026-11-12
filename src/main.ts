@@ -3,7 +3,7 @@ import { createHandler } from './app.ts'
 import { featureFlags } from './adapters/flags/index.ts'
 
 const port = Number(process.env.PORT ?? 8080)
-const version = process.env.VERSION ?? 'dev'
+const version = process.env.APP_VERSION ?? 'dev'
 
 const server = createServer(createHandler({ version, flags: featureFlags() }))
 
