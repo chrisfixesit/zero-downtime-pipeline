@@ -116,6 +116,36 @@ describe('delivery cli', () => {
     assert.ok(!result.out.includes('deploy/prod.json was deleted'))
   })
 
+  it('check-pr: a deploy file renamed away is still seen as a deploy change', () => {
+    const { dir, git } = repo()
+    mkdirSync(join(dir, 'deploy'))
+    writeFileSync(join(dir, 'deploy/prod.json'), '{}\n')
+    git('add', '.')
+    git('commit', '-qm', 'add')
+    const withFile = git('rev-parse', 'HEAD')
+    git('mv', 'deploy/prod.json', 'other.txt')
+    git('commit', '-qm', 'move')
+    const result = cli(dir, 'check-pr', withFile, 'HEAD')
+    assert.equal(result.code, 1)
+    assert.ok(result.err.includes('::error::'))
+    assert.ok(result.err.includes('deploy/'))
+    assert.equal(cli(dir, 'classify', withFile, 'HEAD').out, 'code=true\ndeploy=true\n')
+  })
+
+  it('check-pr: renaming staging.json over prod.json still reports staging deleted', () => {
+    const { dir, git } = repo()
+    mkdirSync(join(dir, 'deploy'))
+    writeFileSync(join(dir, 'deploy/staging.json'), '{}\n')
+    git('add', '.')
+    git('commit', '-qm', 'add')
+    const withFile = git('rev-parse', 'HEAD')
+    git('mv', 'deploy/staging.json', 'deploy/prod.json')
+    git('commit', '-qm', 'rename')
+    const result = cli(dir, 'check-pr', withFile, 'HEAD')
+    assert.equal(result.code, 1)
+    assert.ok(result.err.includes('deploy/staging.json was deleted'))
+  })
+
   it('envs-changed: lists only the environments whose file changed', () => {
     const { dir, git, base } = repo()
     mkdirSync(join(dir, 'deploy'))

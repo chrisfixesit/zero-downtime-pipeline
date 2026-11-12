@@ -11,6 +11,7 @@ import {
   releaseBranch,
   renderPrText,
   renderReleaseFile,
+  runningTaskDefinition,
   sameRelease,
   type Release,
 } from '../../scripts/delivery/release.ts'
@@ -247,5 +248,30 @@ describe('driftProblems', () => {
     assert.deepEqual(driftProblems('prod', { file: B, pointer: A, running: digest(A.digests.app) }), [
       'prod: deploy/prod.json asks for bbbbbbb but aaaaaaa is running',
     ])
+  })
+})
+
+describe('runningTaskDefinition', () => {
+  it('prefers the PRIMARY task set', () => {
+    assert.equal(
+      runningTaskDefinition({
+        taskDefinition: 'td:1',
+        taskSets: [
+          { status: 'ACTIVE', taskDefinition: 'td:3' },
+          { status: 'PRIMARY', taskDefinition: 'td:2' },
+        ],
+      }),
+      'td:2',
+    )
+  })
+  it('uses the service task definition without task sets', () => {
+    assert.equal(runningTaskDefinition({ taskDefinition: 'td:1' }), 'td:1')
+    assert.equal(runningTaskDefinition({ taskDefinition: 'td:1', taskSets: [] }), 'td:1')
+  })
+  it('falls back when only ACTIVE sets exist', () => {
+    assert.equal(
+      runningTaskDefinition({ taskDefinition: 'td:1', taskSets: [{ status: 'ACTIVE', taskDefinition: 'td:3' }] }),
+      'td:1',
+    )
   })
 })

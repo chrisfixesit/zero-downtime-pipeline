@@ -14,6 +14,7 @@ import {
   releaseBranch,
   renderPrText,
   renderReleaseFile,
+  runningTaskDefinition,
   sameRelease,
   type Env,
   type GatedEnv,
@@ -33,7 +34,7 @@ const isZero = (sha: string | undefined) => !sha || /^0+$/.test(sha)
 
 function changedPaths(base: string, head: string): string[] {
   const from = git('merge-base', base, head)
-  const out = git('diff', '--name-only', from, head)
+  const out = git('diff', '--name-only', '--no-renames', from, head)
   return out ? out.split('\n') : []
 }
 
@@ -194,11 +195,13 @@ const commands: Record<string, (args: Args) => void> = {
       return text ? parseRelease(JSON.parse(text)) : null
     })()
     const service = JSON.parse(aws('ecs', 'describe-services', '--cluster', get('cluster'), '--services', get('app-service'))) as {
-      services: { taskDefinition: string }[]
+      services: { taskDefinition?: string; taskSets?: { status: string; taskDefinition: string }[] }[]
     }
     const svc = service.services[0]
     if (!svc) throw new Refusal(`${env}: app service not found`)
-    const taskDef = JSON.parse(aws('ecs', 'describe-task-definition', '--task-definition', svc.taskDefinition)) as {
+    const taskDefArn = runningTaskDefinition(svc)
+    if (!taskDefArn) throw new Refusal(`${env}: app service has no task definition`)
+    const taskDef = JSON.parse(aws('ecs', 'describe-task-definition', '--task-definition', taskDefArn)) as {
       taskDefinition: { containerDefinitions: { name: string; image: string }[] }
     }
     const image = taskDef.taskDefinition.containerDefinitions.find((c) => c.name === 'app')?.image ?? ''

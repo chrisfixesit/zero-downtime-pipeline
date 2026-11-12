@@ -176,3 +176,13 @@ export function driftProblems(
   }
   return problems
 }
+
+// Under the CODE_DEPLOY controller the service-level taskDefinition may not
+// track what is running; the PRIMARY task set is the one serving traffic.
+export function runningTaskDefinition(service: {
+  taskDefinition?: string
+  taskSets?: { status: string; taskDefinition: string }[]
+}): string | undefined {
+  const primary = service.taskSets?.find((t) => t.status === 'PRIMARY')
+  return primary?.taskDefinition ?? service.taskDefinition
+}
