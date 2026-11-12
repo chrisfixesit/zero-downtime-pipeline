@@ -4,3 +4,4 @@
 .tfplan
 .DS_Store
 node_modules/
+infra/.build/
