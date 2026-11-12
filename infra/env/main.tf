@@ -7,8 +7,13 @@ locals {
   prefix  = "${var.name}-${var.env}"
   app_url = "http://${var.alb_dns_name}:${var.port}"
   # Placeholder until the first deploy registers a real revision; the service
-  # ignores task_definition changes (CI owns the running revision).
+  # ignores task_definition changes (CI owns the running revision). It serves
+  # on 8080 so blue passes health checks once the first deploy scales it to 1.
   placeholder = "public.ecr.aws/docker/library/node:26-alpine"
+  placeholder_command = [
+    "node", "-e",
+    "require('node:http').createServer((q,s)=>{s.writeHead(200,{'Content-Type':'application/json'});s.end(JSON.stringify({status:'ok',version:'placeholder'}))}).listen(8080)",
+  ]
 
   log_config = {
     logDriver = "awslogs"
@@ -37,6 +42,8 @@ resource "aws_lb_target_group" "this" {
   protocol    = "HTTP"
   target_type = "ip"
   vpc_id      = var.vpc_id
+  # CodeDeploy waits out the drain on every shift and rollback (default 300 s).
+  deregistration_delay = 30
 
   health_check {
     path                = "/healthz"
@@ -80,6 +87,7 @@ resource "aws_ecs_task_definition" "app" {
     {
       name         = "app"
       image        = local.placeholder
+      command      = local.placeholder_command
       essential    = true
       portMappings = [{ containerPort = 8080, protocol = "tcp" }]
       environment = [

@@ -5,9 +5,13 @@
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
-// Each request gets its own timeout so a hung connection cannot use up the
-// Lambda's 180 s: 12 attempts x (3 s + 3 s + 5 s delay) stays well under it.
+// Each request gets its own timeout so one hung connection cannot use up the
+// Lambda's time; the handler's deadline (below) bounds the whole run.
 const REQUEST_TIMEOUT_MS = 3000
+
+// Stop retrying with this much Lambda time left, so the status report in
+// makeHandler's finally always runs before the Lambda timeout does.
+const RESERVE_MS = 15000
 
 // One pass: /healthz must be 200 and / must report the release being deployed.
 async function check(baseUrl, expectedVersion, fetchFn) {
@@ -22,19 +26,30 @@ async function check(baseUrl, expectedVersion, fetchFn) {
   return { ok: true, reason: `healthz 200 and version ${expectedVersion}` }
 }
 
+// Node's fetch throws "fetch failed"; the useful part (ECONNREFUSED, a
+// timeout) is in its cause.
+function describeError(e) {
+  if (!(e instanceof Error)) return String(e)
+  const cause = e.cause?.code ?? e.cause?.message
+  return cause ? `${e.message} (${cause})` : e.message
+}
+
 // Green may not be registered on the test listener yet when the hook fires,
 // so any failure, including a refused connection, is retried until attempts
-// run out. The last reason is the one reported.
-export async function smoke({ baseUrl, expectedVersion, fetchFn = fetch, attempts = 12, delayMs = 5000 }) {
+// or time run out. The last reason is the one reported.
+export async function smoke({ baseUrl, expectedVersion, fetchFn = fetch, attempts = 12, delayMs = 5000, outOfTime = () => false }) {
   let last = { ok: false, reason: 'no attempts made' }
   for (let i = 1; i <= attempts; i++) {
+    if (outOfTime()) return { ok: false, reason: `out of time after ${i - 1} attempts: ${last.reason}` }
     try {
       last = await check(baseUrl, expectedVersion, fetchFn)
     } catch (e) {
-      last = { ok: false, reason: `request failed: ${e instanceof Error ? e.message : String(e)}` }
+      last = { ok: false, reason: `request failed: ${describeError(e)}` }
     }
     if (last.ok) return last
-    if (i < attempts) await sleep(delayMs)
+    // No sleep once time is short: an attempt takes at most 6 s, so the
+    // report always has at least 9 s.
+    if (i < attempts && !outOfTime()) await sleep(delayMs)
   }
   return { ok: false, reason: `after ${attempts} attempts: ${last.reason}` }
 }
@@ -53,8 +68,10 @@ function taskDefinitionOf(deploymentInfo) {
 
 // Every path ends in PutLifecycleEventHookExecutionStatus. If it did not,
 // CodeDeploy would wait on the hook for up to an hour.
+// context is the Lambda context; it bounds the retries by the time left.
 export function makeHandler({ codedeploy, ecs, fetchFn = fetch, testUrls, smokeOpts = {} }) {
-  return async (event) => {
+  return async (event, context) => {
+    const outOfTime = () => (context ? context.getRemainingTimeInMillis() < RESERVE_MS : false)
     const deploymentId = event.DeploymentId
     let result = { ok: false, reason: 'not checked' }
     let group = null
@@ -67,9 +84,9 @@ export function makeHandler({ codedeploy, ecs, fetchFn = fetch, testUrls, smokeO
       const app = taskDefinition.containerDefinitions.find((c) => c.name === 'app')
       const expectedVersion = app?.environment?.find((e) => e.name === 'VERSION')?.value
       if (!expectedVersion) throw new Error('the app container sets no VERSION')
-      result = await smoke({ ...smokeOpts, baseUrl, expectedVersion, fetchFn })
+      result = await smoke({ ...smokeOpts, baseUrl, expectedVersion, fetchFn, outOfTime })
     } catch (e) {
-      result = { ok: false, reason: e instanceof Error ? e.message : String(e) }
+      result = { ok: false, reason: describeError(e) }
     } finally {
       const status = result.ok ? 'Succeeded' : 'Failed'
       console.log(JSON.stringify({ deploymentId, deploymentGroup: group, status, reason: result.reason }))

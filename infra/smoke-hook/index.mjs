@@ -7,4 +7,7 @@ import { makeHandler } from './smoke.mjs'
 // Deployment-group name -> http://<alb-dns>:<test-port>, set by smoke-hook.tf.
 const testUrls = JSON.parse(process.env.TEST_URLS ?? '{}')
 
-export const handler = makeHandler({ codedeploy: new CodeDeploy({}), ecs: new ECS({}), fetchFn: fetch, testUrls })
+const run = makeHandler({ codedeploy: new CodeDeploy({}), ecs: new ECS({}), fetchFn: fetch, testUrls })
+
+// The context carries getRemainingTimeInMillis, which bounds the retries.
+export const handler = (event, context) => run(event, context)

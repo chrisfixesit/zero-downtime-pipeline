@@ -7,7 +7,7 @@
 resource "aws_ecr_repository" "app" {
   name                 = "${local.name}/app"
   image_tag_mutability = "IMMUTABLE"
-  force_delete         = true
+  # No force_delete: release images must survive a forced replacement.
 
   image_scanning_configuration { scan_on_push = true }
 }

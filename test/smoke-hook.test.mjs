@@ -72,6 +72,8 @@ function stubs({ describeTaskDefinition }) {
 }
 
 const event = { DeploymentId: 'd-TEST', LifecycleEventHookExecutionId: 'hook-1' }
+// A Lambda context with plenty of time left.
+const ctx = { getRemainingTimeInMillis: () => 120000 }
 
 test('handler reports Succeeded for a healthy release', async () => {
   let askedFor
@@ -90,10 +92,51 @@ test('handler reports Succeeded for a healthy release', async () => {
   })
   const fetchFn = answersWith('abc123')
   const handler = makeHandler({ codedeploy, ecs, fetchFn, testUrls: { 'zdp-sandbox': BASE }, smokeOpts: { delayMs: 0 } })
-  await handler(event)
+  await handler(event, ctx)
   assert.equal(askedFor, TASK_DEF)
   assert.ok(fetchFn.calls.every((u) => u.startsWith(BASE)))
   assert.deepEqual(reported, [{ deploymentId: 'd-TEST', lifecycleEventHookExecutionId: 'hook-1', status: 'Succeeded' }])
+})
+
+test('smoke names the cause of a failed request', async () => {
+  const refused = new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
+  const fetchFn = fakeFetch({ healthz: () => refused, root: () => ({ status: 200, body: { version: 'abc123' } }) })
+  const result = await smoke({ baseUrl: BASE, expectedVersion: 'abc123', fetchFn, attempts: 1, delayMs: 0 })
+  assert.equal(result.ok, false)
+  assert.match(result.reason, /fetch failed \(ECONNREFUSED\)/)
+})
+
+test('handler reports Failed out of time and makes no further fetches when under 15 s remain', async () => {
+  const { codedeploy, ecs, reported } = stubs({
+    describeTaskDefinition: async () => ({
+      taskDefinition: { containerDefinitions: [{ name: 'app', environment: [{ name: 'VERSION', value: 'abc123' }] }] },
+    }),
+  })
+  const fetchFn = answersWith('abc123')
+  const handler = makeHandler({ codedeploy, ecs, fetchFn, testUrls: { 'zdp-sandbox': BASE }, smokeOpts: { delayMs: 0 } })
+  await handler(event, { getRemainingTimeInMillis: () => 14999 })
+  assert.equal(fetchFn.calls.length, 0)
+  assert.deepEqual(reported, [{ deploymentId: 'd-TEST', lifecycleEventHookExecutionId: 'hook-1', status: 'Failed' }])
+})
+
+test('handler stops retrying once the deadline is reached', async () => {
+  const { codedeploy, ecs, reported } = stubs({
+    describeTaskDefinition: async () => ({
+      taskDefinition: { containerDefinitions: [{ name: 'app', environment: [{ name: 'VERSION', value: 'abc123' }] }] },
+    }),
+  })
+  // Green never answers; time runs out after the second attempt.
+  let remaining = 60000
+  const fetchFn = fakeFetch({ healthz: () => new Error('ECONNREFUSED'), root: () => ({ status: 200, body: {} }) })
+  const counting = async (url, init) => {
+    remaining -= 25000
+    return fetchFn(url, init)
+  }
+  counting.calls = fetchFn.calls
+  const handler = makeHandler({ codedeploy, ecs, fetchFn: counting, testUrls: { 'zdp-sandbox': BASE }, smokeOpts: { delayMs: 0 } })
+  await handler(event, { getRemainingTimeInMillis: () => remaining })
+  assert.equal(fetchFn.calls.length, 2)
+  assert.equal(reported[0].status, 'Failed')
 })
 
 test('handler reports Failed when the task definition lookup throws', async () => {
@@ -103,6 +146,6 @@ test('handler reports Failed when the task definition lookup throws', async () =
     },
   })
   const handler = makeHandler({ codedeploy, ecs, fetchFn: answersWith('abc123'), testUrls: { 'zdp-sandbox': BASE }, smokeOpts: { delayMs: 0 } })
-  await handler(event)
+  await handler(event, ctx)
   assert.deepEqual(reported, [{ deploymentId: 'd-TEST', lifecycleEventHookExecutionId: 'hook-1', status: 'Failed' }])
 })
