@@ -28,6 +28,7 @@ resource "aws_iam_role_policy" "smoke_hook" {
     Version = "2012-10-17"
     Statement = [
       { Effect = "Allow", Action = ["codedeploy:PutLifecycleEventHookExecutionStatus", "codedeploy:GetDeployment"], Resource = "arn:aws:codedeploy:us-east-1:${local.account}:deploymentgroup:${local.name}/*" },
+      { Effect = "Allow", Action = ["codedeploy:GetApplicationRevision"], Resource = "arn:aws:codedeploy:us-east-1:${local.account}:application:${local.name}" },
       { Effect = "Allow", Action = ["ecs:DescribeTaskDefinition"], Resource = "*" },
     ]
   })
