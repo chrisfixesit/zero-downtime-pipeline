@@ -27,6 +27,8 @@ export function createHandler(opts: HandlerOptions) {
         return send(res, 200, { status: 'ok', version: opts.version })
       }
       if (req.method === 'GET' && path === '/') {
+        // Canary drill (proof 9): fail any request with a query string. Reverted next.
+        if ((req.url ?? '').includes('?')) return send(res, 500, { error: 'canary drill' })
         return send(res, 200, {
           service: 'zero-downtime-pipeline',
           version: opts.version,
