@@ -12,6 +12,14 @@ The app is a stand-in HTTP service, so it is obvious what a project replaces.
 
 **Stack:** ECS Fargate · CodeDeploy blue/green · ALB · CloudWatch alarms · AppConfig · GitHub Actions OIDC · OpenTofu · Node 26 (TypeScript, run directly)
 
+## Architecture
+
+![Merges flow through GitHub Actions into CodeDeploy blue/green on ECS, guarded by a smoke hook and a 5xx alarm](docs/zero-downtime-pipeline-architecture.drawio.png)
+
+The numbered steps are explained in the legend on the right; click the image to open it full size.
+
+The cluster, load balancer, registry, CodeDeploy application and smoke hook are shared. Each of sandbox, staging and prod has its own listeners, target groups, service, alarm, deployment group and AppConfig application. To edit the diagram, open the PNG in [draw.io](https://app.diagrams.net); the source is embedded in it.
+
 ## How a release flows
 
 ```mermaid
