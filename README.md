@@ -84,7 +84,7 @@ The pipeline's failure paths are proved with throwaway commits and a flag, not d
 1. Make `/` in `src/app.ts` report the wrong version (`version: 'drill'` instead of `version: opts.version`), and change its test in `test/app.test.ts` to expect `'drill'`, so CI stays green (the sandbox deploy only runs when the unit tests pass). Leave `/healthz` alone: it is also the target group's health check, so green must stay healthy for the hook to run at all.
 2. Merge. CI builds the image and **Deploy (reusable)** runs for sandbox.
 3. Expect the smoke hook to fail on the test listener (its log says `/ reports version "drill", expected "<sha>"`) and CodeDeploy to fail the deployment. The run fails with `::error::sandbox deployment <id> Failed: <code> <message>; CodeDeploy returned traffic to the previous release; nothing recorded`, where `<code>` and `<message>` are the deployment's `errorInformation`.
-4. Check that users never saw it: `curl http://<alb>:8081/` still reports the previous `version`, and last-good is unchanged.
+4. Check that users never saw it: `curl http://<alb>:8081/` still reports the previous `version`, and last-good is unchanged. In the first real run the run failed about 4 minutes after the merge.
 5. Revert the commit through a PR; it deploys and records normally.
 
 A release whose `/healthz` fails is a different failure: green never becomes healthy, so the hook never runs and CodeDeploy waits. `deploy.sh` stops such a deployment with auto-rollback at its 40-minute timeout and fails with `did not finish in 40 minutes; stopped it with auto-rollback; nothing recorded`.
@@ -95,7 +95,7 @@ A release whose `/healthz` fails is a different failure: green never becomes hea
 2. Merge. Sandbox deploys cleanly and records the release as last-good (sandbox gets no traffic during its deployment).
 3. Run **Promote** for staging, then review and merge its PR. **Apply promotion** starts the staging deployment.
 4. When the CodeDeploy console shows traffic shifting (10% on green), drive traffic: `scripts/drill-traffic.sh "http://<alb>:8082/?drill" 600`. About 5 requests a second means about 30 reach green each minute, all 500.
-5. Expect `zdp-staging-target-5xx` to fire within a few minutes, CodeDeploy to return all traffic to blue (the 5xx count in the drill output stops rising), and the Apply promotion run to fail with nothing recorded. Staging's last-good is unchanged.
+5. Expect `zdp-staging-target-5xx` to fire within a few minutes, CodeDeploy to return all traffic to blue (the 5xx count in the drill output stops rising), and the Apply promotion run to fail with nothing recorded. Staging's last-good is unchanged. In the first real run the alarm fired 2m37s after traffic started, CodeDeploy stopped the deployment (`ALARM_ACTIVE`) 26 s later, and 90 of about 1,000 requests failed before the count froze: the 10% on green.
 6. Revert the commit through a PR. Until the revert's sandbox deploy records a new last-good, **do not promote sandbox to prod**: its last-good is the drill release.
 7. Restore staging's intent. The merged promotion PR left `deploy/staging.json` naming the drill release while the previous one is still running, so **Drift check** reports `staging: deploy/staging.json asks for <drill> but <previous> is running` every hour until this is fixed. Run **Roll back** for `staging` with the previous release's full SHA (staging's last-good: `aws ssm get-parameter --name /zdp/staging/last-good --query Parameter.Value --output text | jq -r .sha`), then review and merge the PR it opens. Alternatively, once the revert is sandbox's last-good, run **Promote** for staging again.
 
@@ -105,8 +105,8 @@ Drill 1 needs no such step: sandbox has no deploy file, and after the rollback i
 
 1. **Actions → Flag**: `sandbox`, `alarmDrill`, `on`.
 2. Wait about a minute for the flag to reach the app (`curl http://<alb>:8081/drill/alarm` turns from 404 to 500), then send a burst: `for i in $(seq 20); do curl -s -o /dev/null -w '%{http_code}\n' http://<alb>:8081/drill/alarm; done`.
-3. Expect `zdp-sandbox-target-5xx` to fire during the five-minute watch, AppConfig to put the previous value back, and the Flag run to fail with "rolled back". `/drill/alarm` returns 404 again.
-4. Wait for the alarm to return to `OK` before flipping anything else in sandbox.
+3. Expect `zdp-sandbox-target-5xx` to fire during the five-minute watch, AppConfig to put the previous value back, and the Flag run to fail with "rolled back". `/drill/alarm` returns 404 again. Don't poll `/drill/alarm` to see when that happens: until the flag is back off, each poll is a 500, and polling faster than five a minute keeps the alarm firing. Watch the Flag run instead.
+4. Wait for the alarm to return to `OK` before flipping anything else in sandbox, or merging to `main`: a sandbox deployment started while the alarm fires is stopped and rolled back.
 
 ## Design choices
 

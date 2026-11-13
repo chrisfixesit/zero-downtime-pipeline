@@ -22,10 +22,6 @@ A merge to `main` builds one image and deploys it to sandbox. To move it on, run
 
 ### What happens after you merge
 
-<!-- Timings are estimates until the first real runs; measure and update them:
-     sandbox about 10 minutes, staging/prod about 15 (below), and a flag
-     flip about six minutes (Releasing behind a flag, step 5). -->
-
 1. **CI on `main`** runs the same checks as your PR, then builds the image once. `ci-ok` is the required check; it fails if any job fails.
 2. **Sandbox deploys** that image through CodeDeploy. The new release (green) starts beside the running one (blue) and is attached to the test listener only.
 3. **A smoke test runs before any user traffic.** CodeDeploy's `AfterAllowTestTraffic` hook calls a Lambda that checks `/healthz` returns 200 and `/` reports the commit being deployed, through the test listener. If it fails, CodeDeploy stops the deployment and users never see the release.
@@ -33,7 +29,7 @@ A merge to `main` builds one image and deploys it to sandbox. To move it on, run
 5. **Only a clean deployment is recorded** as the environment's **last-good** (SSM `/zdp/<env>/last-good`). The deploy run's summary shows the release.
 6. **Promotion follows last-good.** Staging can only receive a release that ran cleanly in sandbox, prod only one from staging; `promotion-check` refuses anything else, including a PR whose digest was swapped.
 
-Allow about 10 minutes from merge to a recorded sandbox release, and about 15 minutes from merging a promotion PR to a recorded staging or prod release (the 5-minute canary, then 5 minutes before blue is shut down).
+Allow about 5 minutes from merge to a recorded sandbox release, and about 13 minutes from merging a promotion or rollback PR to a recorded staging or prod release (the 5-minute canary, then 5 minutes before blue is shut down). Those are measured from the first real runs (November 2026).
 
 A failure in **any** environment, sandbox included, leaves the previous release serving and records nothing, so the failed release cannot be promoted. The run's error line says why (smoke hook, alarm, or another CodeDeploy error). Fix forward or revert on `main`.
 
@@ -77,7 +73,7 @@ Locally and in CI every flag is off unless a test sets it, so unfinished work ca
 
 **5. Turn it on**, one environment at a time: **Actions → Flag → Run workflow** on `main`, with the environment, the flag name and `on`. Start with sandbox, then staging, then prod.
 
-- It takes **about six minutes**. The new setting reaches the app at once, then AppConfig watches for five minutes. That is the price of the safety net below: the alarm needs about three minutes to notice errors, so the watch has to outlast it.
+- It takes **about six minutes**. The new setting reaches the app within a minute (the AppConfig agent's poll), then AppConfig watches for five minutes. That is the price of the safety net below: the alarm needs about three minutes to notice errors, so the watch has to outlast it.
 - A green run ends with a line such as `Deployment 3: reportExport=on in sandbox (version 3)`.
 - A flag can only be flipped where its code is running. The run reads the environment's release from last-good and refuses with `"…" is not declared by the release running in this environment` if that release's registry lacks the flag. A flag added on `main` reaches staging and prod only when its release is promoted there.
 - A red run says why in the log and as an annotation.
