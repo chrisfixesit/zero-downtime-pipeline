@@ -1,6 +1,6 @@
 # infra/bootstrap/main.tf
-# The state bucket for infra/, created once with local state before the main
-# stack can init its S3 backend. Apply it once; keep its local state safe.
+# The state bucket for infra/, created once before the main stack can init its
+# S3 backend. Its own state then moves into the bucket (backend.tf).
 terraform {
   required_version = ">= 1.10.0"
 
