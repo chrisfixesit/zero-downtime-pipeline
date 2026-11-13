@@ -65,7 +65,16 @@ One AWS account, region `us-east-1`. The commands below use `AWS_PROFILE=persona
 
 1. **Tools.** `nvm use 26` (reads `.nvmrc`), then `npm ci && npm test`. You also need OpenTofu ≥ 1.10, the AWS CLI, `gh` and `jq`.
 2. **GitHub repo.** Create it public (CODEOWNERS reviews and environment protection on a free plan need that): `gh repo create <owner>/<repo> --public`. Don't push yet. The local branch must be called `main` (`git branch -M main`).
-3. **State bucket (once).** `cd infra/bootstrap && AWS_PROFILE=personal-sandbox tofu init && AWS_PROFILE=personal-sandbox tofu apply`. It keeps its own small local state; don't lose it (the bucket has `prevent_destroy`).
+3. **State bucket (once).** The bucket holds bootstrap's own state too (`infra/bootstrap/backend.tf`), so the first apply runs with local state and then moves it into the bucket:
+   ```sh
+   cd infra/bootstrap
+   mv backend.tf backend.tf.off
+   AWS_PROFILE=personal-sandbox tofu init && AWS_PROFILE=personal-sandbox tofu apply
+   mv backend.tf.off backend.tf
+   AWS_PROFILE=personal-sandbox tofu init -migrate-state   # answer yes
+   rm -f terraform.tfstate terraform.tfstate.backup
+   ```
+   The bucket has versioning and `prevent_destroy`.
 4. **Infrastructure.** `cd infra && AWS_PROFILE=personal-sandbox tofu init && AWS_PROFILE=personal-sandbox tofu apply`. It is applied locally, by a person: there is no CI apply workflow or role. *(This repo is exempt from the maintainer's usual rule that personal-account infra goes through a central OpenTofu repo, because a template must be self-contained.)*
 5. **GitHub App.** Release PRs must be opened by an App: a PR opened with `GITHUB_TOKEN` never triggers CI, so `promotion-check` would never run. Create an App with repository permissions **Contents: read and write** and **Pull requests: read and write**, generate a private key, and install it on the repo. Note its App ID.
 6. **Configure GitHub.** `scripts/configure-github.sh <app-id>`. It reads the tofu outputs, creates the `sandbox`, `staging`, `prod` and `release-automation` environments (deployable from `main` only), sets `DEPLOYER_ROLE_ARN` per environment plus `PR_READ_ROLE_ARN`, `MAIN_READ_ROLE_ARN` and `AUTOMATION_APP_ID`, and stops Actions from approving PRs.
@@ -133,7 +142,7 @@ Replace:
 - **Owners:** `.github/CODEOWNERS`.
 - **Repo and account:**
   - `var.github_repo` in `infra/main.tf` (or `-var github_repo=…`), and `GITHUB_REPO` for `configure-github.sh`;
-  - the account ID in `infra/bootstrap/main.tf` and `infra/versions.tf` (the state bucket) and in `infra/main.tf` (the GitHub OIDC provider, which must already exist in the account).
+  - the account ID in `infra/bootstrap/main.tf`, `infra/bootstrap/backend.tf` and `infra/versions.tf` (the state bucket) and in `infra/main.tf` (the GitHub OIDC provider, which must already exist in the account).
 - **The `zdp` prefix,** if more than one copy shares an account: `local.name` in `infra/main.tf`, and the `/zdp/` and `zdp/app` paths in `.github/scripts/` and `scripts/delivery/cli.ts`.
 - **Sizes and timings:** task CPU and memory in `infra/env/main.tf`, and the deployment configs and blue termination waits in `local.envs` (`infra/main.tf`).
 
